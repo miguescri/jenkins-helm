@@ -1,3 +1,92 @@
+# Install Jenkins with Helm
+
+This document summarizes the steps needed to run the Helm chart hosted in this repository, including
+the base installation and the required troubleshooting.
+
+## Installation
+
+Create a simple Kubernetes cluster with Minikube.
+
+```shell
+minikube start  # use --driver=virtualbox to create the cluster inside a VM
+```
+
+Install the Helm chart into a dedicated `jenkins` namespace and check the pods it creates.
+
+```shell
+kubectl create ns jenkins
+helm install jenkins-helm . -n jenkins
+kubectl get pods -n jenkins
+```
+
+The output shows that the chart deploys a StatefulSet with one pod called `jenkins-helm-0`, but the pod 
+fails to reach the Ready stage. 
+
+## Troubleshoot
+
+To find the root of the problem, first list the events of the pod:
+
+```shell
+kubectl -n jenkins describe pod jenkins-helm-0
+```
+
+```
+  ...
+  Normal   Created    51s               kubelet            Created container jenkins
+  Normal   Started    50s               kubelet            Started container jenkins
+  Normal   Pulled     50s               kubelet            Container image "kiwigrid/k8s-sidecar:1.12.2" already present on machine
+  Normal   Created    50s               kubelet            Created container config-reload
+  Normal   Started    50s               kubelet            Started container config-reload
+  Warning  Unhealthy  37s               kubelet            Startup probe failed: HTTP probe failed with statuscode: 503
+  Warning  Unhealthy  0s (x4 over 30s)  kubelet            Startup probe failed: HTTP probe failed with statuscode: 500
+```
+
+The messages above indicate that the resources required by the pod are properly allocated, but the startup
+probe fails to reach the app. The `templates/jenkins-controller-statefulset.yaml` file defines the startup 
+probe for the `jenkins` container, so the next step is to retrieve the logs of that container:
+
+```shell
+kubectl -n jenkins logs jenkins-helm-0 jenkins
+```
+
+```
+...
+io.jenkins.plugins.casc.ConfiguratorException: Invalid configuration elements for type class io.jenkins.plugins.casc.core.HudsonPrivateSecurityRealmConfigurator$UserWithPassword : user_id.
+Available attributes : description, id, name, password, properties
+...
+```
+
+The logs contain the exception outlined above, which points to an error in the configuration of the
+SecurityRealm. Indeed, the file `values.yaml` contains the wrong definition, using the key `user_id`
+instead of `id`.
+
+```diff
+@@ -291,7 +291,7 @@ controller:
+     securityRealm: |-
+       local:
+         allowsSignup: false
+         enableCaptcha: false
+         users:
+-        - user_id: "${chart-admin-username}"
++        - id: "${chart-admin-username}"
+           name: "Jenkins Admin"
+           password: "${chart-admin-password}"
+```
+
+Changing that and re-installing the chart fixes the problem.
+
+## Clean up
+
+Finally, uninstall the chart and delete the Minikube cluster.
+
+```shell
+helm uninstall -n jenkins jenkins-helm
+kubectl delete ns jenkins
+minikube delete
+```
+
+---
+
 # Jenkins
 
 [Jenkins](https://www.jenkins.io/) is the leading open source automation server, Jenkins provides hundreds of plugins to support building, deploying and automating any project.
